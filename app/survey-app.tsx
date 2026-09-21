@@ -17,16 +17,14 @@ const tambons = [...new Set(lights.map((light) => light.tambon))].sort((a, b) =>
 async function persistStatus(input: { id: string; completed: boolean; surveyor: string; note: string; expectedRevision: string | null }): Promise<SurveyStatus> {
   const response = await fetch("/api/status", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(input) });
   const result = await response.json() as { status?: SurveyStatus; error?: string; current?: SurveyStatus | null };
-  if (response.status === 401) throw new SignInError(result.error || "ต้องลงชื่อเข้าใช้เพื่อบันทึกผลสำรวจ");
   if (response.status === 409) throw new ConflictError(result.error || "ข้อมูลเปลี่ยนแล้ว", result.current ?? null);
   if (!response.ok || !result.status) throw new Error(result.error || "บันทึกไม่สำเร็จ");
   return result.status;
 }
 
 class ConflictError extends Error { constructor(message: string, public current: SurveyStatus | null) { super(message); } }
-class SignInError extends Error {}
 
-export default function SurveyApp({ signedIn }: { signedIn: boolean }) {
+export default function SurveyApp() {
   const [tambon, setTambon] = useState("all");
   const [query, setQuery] = useState("");
   const [statusFilter, setStatusFilter] = useState("all");
@@ -41,7 +39,6 @@ export default function SurveyApp({ signedIn }: { signedIn: boolean }) {
   const [baseRevision, setBaseRevision] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [saveMessage, setSaveMessage] = useState("");
-  const [signInRequired, setSignInRequired] = useState(!signedIn);
   const [geoMessage, setGeoMessage] = useState("กด ‘ตำแหน่งของฉัน’ เพื่อแสดงตำแหน่งมือถือ");
   const [myPosition, setMyPosition] = useState<[number, number] | null>(null);
   const [mapReady, setMapReady] = useState(false);
@@ -132,7 +129,7 @@ export default function SurveyApp({ signedIn }: { signedIn: boolean }) {
         if (typeof value.pea !== "string" || !lights.some((light) => light.id === value.pea) || typeof value.completed !== "boolean" || typeof value.surveyor !== "string" || (value.note !== undefined && typeof value.note !== "string") || !(value.expectedRevision === null || typeof value.expectedRevision === "string")) throw new Error("ข้อมูลไม่ถูกต้อง");
         const surveyorName = value.surveyor.trim();
         const noteText = typeof value.note === "string" ? value.note.trim() : "";
-        if (surveyorName.length > 80 || noteText.length > 500 || (value.completed && !surveyorName)) throw new Error("กรุณากรอกชื่อผู้สำรวจให้ถูกต้อง");
+        if (!surveyorName || surveyorName.length > 80 || noteText.length > 500) throw new Error("กรุณากรอกชื่อผู้สำรวจให้ถูกต้อง");
         const status = await persistStatus({ id: value.pea, completed: value.completed, surveyor: surveyorName, note: noteText, expectedRevision: value.expectedRevision });
         setStatuses((previous) => ({ ...previous, [status.facility_id]: status }));
         setSelectedId(status.facility_id);
@@ -237,7 +234,7 @@ export default function SurveyApp({ signedIn }: { signedIn: boolean }) {
   async function saveSelected() {
     if (!selected || saving) return;
     if (remoteChanged) { setSaveMessage("มีคนอื่นแก้ไขจุดนี้แล้ว กรุณาโหลดข้อมูลล่าสุดก่อน"); return; }
-    if (draftComplete && !surveyor.trim()) { setSaveMessage("กรุณากรอกชื่อผู้สำรวจ"); return; }
+    if (!surveyor.trim()) { setSaveMessage("กรุณากรอกชื่อผู้สำรวจ"); return; }
     setSaving(true); setSaveMessage("");
     try {
       const status = await persistStatus({ id: selected.id, completed: draftComplete, surveyor: surveyor.trim(), note: note.trim(), expectedRevision: baseRevision });
@@ -249,7 +246,6 @@ export default function SurveyApp({ signedIn }: { signedIn: boolean }) {
   }
 
   function handleMutationError(error: unknown) {
-    if (error instanceof SignInError) setSignInRequired(true);
     if (error instanceof ConflictError && selected) {
       setStatuses((previous) => { const next = { ...previous }; if (error.current) next[selected.id] = error.current; else delete next[selected.id]; return next; });
     }
@@ -268,7 +264,6 @@ export default function SurveyApp({ signedIn }: { signedIn: boolean }) {
     try {
       const response = await fetch("/api/status", { method: "DELETE", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ id: selected.id, expectedRevision: baseRevision }) });
       const result = await response.json() as { deleted?: string; error?: string; current?: SurveyStatus | null };
-      if (response.status === 401) throw new SignInError(result.error || "ต้องลงชื่อเข้าใช้เพื่อลบผลสำรวจ");
       if (response.status === 409) throw new ConflictError(result.error || "ข้อมูลเปลี่ยนแล้ว", result.current ?? null);
       if (!response.ok || !result.deleted) throw new Error(result.error || "ลบไม่สำเร็จ");
       setStatuses((previous) => { const next = { ...previous }; delete next[selected.id]; return next; });
@@ -283,11 +278,10 @@ export default function SurveyApp({ signedIn }: { signedIn: boolean }) {
     <div className="detail-location">{selected.location === "-" ? "ไม่ระบุ Location" : selected.location}</div>
     <div className="detail-meta">PEA {selected.id} · {selected.rateKva} kVA · {selected.feeder}</div>
     <div className="detail-coords">{selected.lat}, {selected.long} <a href={"https://www.google.com/maps?q=" + selected.lat + "," + selected.long} target="_blank" rel="noopener noreferrer">เปิดนำทาง ↗</a></div>
-    {signInRequired && <div className="signin-notice" role="status"><span>การเข้าสู่ระบบหมดอายุ กรุณาใช้รหัสทีมเพื่อกลับมาบันทึกจุดนี้</span><a href={"/login?returnTo=" + encodeURIComponent("/?point=" + selected.id)}>เข้าสู่ระบบอีกครั้ง</a></div>}
     {remoteChanged && <div className="conflict-warning" role="alert">มีคนอื่นอัปเดตจุดนี้แล้ว <Button size="sm" variant="outline" onClick={loadLatest}>โหลดข้อมูลล่าสุด</Button></div>}
-    <label className="check-row"><Checkbox checked={draftComplete} onCheckedChange={(checked) => setDraftComplete(checked === true)} disabled={signInRequired || Boolean(statusError) || statusLoading} /><span>สำรวจแล้ว</span></label>
-    <div className="detail-fields"><label>ผู้สำรวจ<Input value={surveyor} onChange={(event) => setSurveyor(event.target.value)} placeholder="ชื่อผู้สำรวจ" maxLength={80} disabled={signInRequired} /></label><label>หมายเหตุ (ถ้ามี)<Input value={note} onChange={(event) => setNote(event.target.value)} placeholder="ผลสำรวจหรือข้อสังเกต" maxLength={500} disabled={signInRequired} /></label></div>
-    <div className="detail-actions">{!signInRequired && <><Button onClick={() => void saveSelected()} disabled={saving || remoteChanged || Boolean(statusError) || statusLoading}>{saving ? "กำลังบันทึก…" : statuses[selected.id] ? "บันทึกการแก้ไข" : "บันทึกผลสำรวจ"}</Button>{statuses[selected.id] && <AlertDialog><AlertDialogTrigger asChild><Button variant="outline" disabled={saving || remoteChanged} className="delete-button">ลบผลสำรวจ</Button></AlertDialogTrigger><AlertDialogContent><AlertDialogHeader><AlertDialogTitle>ลบผลสำรวจจุดนี้?</AlertDialogTitle><AlertDialogDescription>จะลบสถานะ ผู้สำรวจ และหมายเหตุที่บันทึกไว้ แต่จุด PEA ยังอยู่ในแผนที่</AlertDialogDescription></AlertDialogHeader><AlertDialogFooter><AlertDialogCancel>ยกเลิก</AlertDialogCancel><AlertDialogAction onClick={() => void deleteSelected()} className="bg-red-700 text-white hover:bg-red-800">ยืนยันลบ</AlertDialogAction></AlertDialogFooter></AlertDialogContent></AlertDialog>}</>}{statuses[selected.id]?.updated_at && <span>อัปเดต {new Date(statuses[selected.id].updated_at).toLocaleString("th-TH")}</span>}</div>
+    <label className="check-row"><Checkbox checked={draftComplete} onCheckedChange={(checked) => setDraftComplete(checked === true)} disabled={Boolean(statusError) || statusLoading} /><span>สำรวจแล้ว</span></label>
+    <div className="detail-fields"><label>ผู้สำรวจ<Input value={surveyor} onChange={(event) => setSurveyor(event.target.value)} placeholder="ชื่อผู้สำรวจ" maxLength={80} /></label><label>หมายเหตุ (ถ้ามี)<Input value={note} onChange={(event) => setNote(event.target.value)} placeholder="ผลสำรวจหรือข้อสังเกต" maxLength={500} /></label></div>
+    <div className="detail-actions"><Button onClick={() => void saveSelected()} disabled={saving || remoteChanged || Boolean(statusError) || statusLoading}>{saving ? "กำลังบันทึก…" : statuses[selected.id] ? "บันทึกการแก้ไข" : "บันทึกผลสำรวจ"}</Button>{statuses[selected.id] && <AlertDialog><AlertDialogTrigger asChild><Button variant="outline" disabled={saving || remoteChanged} className="delete-button">ลบผลสำรวจ</Button></AlertDialogTrigger><AlertDialogContent><AlertDialogHeader><AlertDialogTitle>ลบผลสำรวจจุดนี้?</AlertDialogTitle><AlertDialogDescription>จะลบสถานะ ผู้สำรวจ และหมายเหตุที่บันทึกไว้ แต่จุด PEA ยังอยู่ในแผนที่</AlertDialogDescription></AlertDialogHeader><AlertDialogFooter><AlertDialogCancel>ยกเลิก</AlertDialogCancel><AlertDialogAction onClick={() => void deleteSelected()} className="bg-red-700 text-white hover:bg-red-800">ยืนยันลบ</AlertDialogAction></AlertDialogFooter></AlertDialogContent></AlertDialog>}{statuses[selected.id]?.updated_at && <span>อัปเดต {new Date(statuses[selected.id].updated_at).toLocaleString("th-TH")}</span>}</div>
     {saveMessage && <p className="save-message" role="status">{saveMessage}</p>}
   </div>;
 

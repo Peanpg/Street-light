@@ -1,6 +1,5 @@
 import { NextResponse } from "next/server";
 import { deleteSurveyStatus, getSurveyStatus, listSurveyStatuses, saveSurveyStatus } from "@/db/status";
-import { getTeamUser } from "@/lib/team-auth";
 import lights from "@/app/lights.json";
 
 export const dynamic = "force-dynamic";
@@ -8,7 +7,6 @@ export const runtime = "nodejs";
 const validIds = new Set(lights.map((light) => light.id));
 
 export async function GET() {
-  if (!await getTeamUser()) return NextResponse.json({ error: "กรุณาเข้าสู่ระบบ" }, { status: 401 });
   try {
     return NextResponse.json({ statuses: await listSurveyStatuses() }, { headers: { "Cache-Control": "no-store" } });
   } catch (error) {
@@ -18,8 +16,6 @@ export async function GET() {
 }
 
 export async function PUT(request: Request) {
-  const user = await getTeamUser();
-  if (!user) return NextResponse.json({ error: "กรุณาเข้าสู่ระบบอีกครั้ง" }, { status: 401 });
   if (request.headers.get("origin") !== new URL(request.url).origin) return NextResponse.json({ error: "คำขอไม่ถูกต้อง" }, { status: 403 });
   let body: unknown;
   try { body = await request.json(); } catch { return NextResponse.json({ error: "ข้อมูลที่ส่งมาไม่ถูกต้อง" }, { status: 400 }); }
@@ -30,11 +26,11 @@ export async function PUT(request: Request) {
   const surveyor = typeof value.surveyor === "string" ? value.surveyor.trim() : "";
   const note = typeof value.note === "string" ? value.note.trim() : "";
   const expectedRevision = value.expectedRevision;
-  if (!validIds.has(id) || typeof completed !== "boolean" || surveyor.length > 80 || note.length > 500 || (completed && !surveyor) || !(expectedRevision === null || (typeof expectedRevision === "string" && expectedRevision.length <= 80))) {
+  if (!validIds.has(id) || typeof completed !== "boolean" || !surveyor || surveyor.length > 80 || note.length > 500 || !(expectedRevision === null || (typeof expectedRevision === "string" && expectedRevision.length <= 80))) {
     return NextResponse.json({ error: "กรุณาเลือกจุดและกรอกชื่อผู้สำรวจให้ถูกต้อง" }, { status: 400 });
   }
   try {
-    const status = await saveSurveyStatus({ id, completed, surveyor, note, updatedBy: user.name, expectedRevision: expectedRevision as string | null });
+    const status = await saveSurveyStatus({ id, completed, surveyor, note, updatedBy: surveyor, expectedRevision: expectedRevision as string | null });
     if (!status) return NextResponse.json({ error: "จุดนี้มีการเปลี่ยนแปลงจากผู้ใช้อื่น กรุณาโหลดข้อมูลล่าสุดก่อนบันทึก", current: await getSurveyStatus(id) }, { status: 409 });
     return NextResponse.json({ status }, { headers: { "Cache-Control": "no-store" } });
   } catch (error) {
@@ -44,8 +40,6 @@ export async function PUT(request: Request) {
 }
 
 export async function DELETE(request: Request) {
-  const user = await getTeamUser();
-  if (!user) return NextResponse.json({ error: "กรุณาเข้าสู่ระบบอีกครั้ง" }, { status: 401 });
   if (request.headers.get("origin") !== new URL(request.url).origin) return NextResponse.json({ error: "คำขอไม่ถูกต้อง" }, { status: 403 });
   let body: unknown;
   try { body = await request.json(); } catch { return NextResponse.json({ error: "ข้อมูลที่ส่งมาไม่ถูกต้อง" }, { status: 400 }); }
