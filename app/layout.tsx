@@ -1,9 +1,11 @@
 import type { Metadata } from "next";
 import "./globals.css";
+import "./map-controls.css";
+import "./follow-button.css";
 
 export const metadata: Metadata = {
-  title: "สำรวจโคมไฟสาธารณะ | น้ำพอง",
-  description: "แผนที่จุดหม้อแปลงและติดตามงานสำรวจโคมไฟสาธารณะในอำเภอน้ำพอง",
+  title: "สำรวจมิเตอร์ไฟสาธารณะ | น้ำพอง",
+  description: "แผนที่จุดหม้อแปลงและติดตามงานสำรวจมิเตอร์ไฟสาธารณะในอำเภอน้ำพอง",
   icons: { icon: "/favicon.svg", shortcut: "/favicon.svg" },
 };
 

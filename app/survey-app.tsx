@@ -7,15 +7,16 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle, AlertDialogTrigger } from "@/components/ui/alert-dialog";
-import lightsData from "./lights.json";
+import lightsData from "./transformers.json";
+import TeamLocations from "./team-locations";
 
-type Light = { id: string; seq: number; tambon: string; location: string; lat: number; long: number; rateKva: number; feeder: string; sourceStatus: string };
+type Light = { id: string; seq: number; tambon: string; feeder: string; location: string; lat: number; long: number; rateKva: number; sourceStatus: string; owner: string; phaseCode: number; numberOfUsers: number };
 type SurveyStatus = { facility_id: string; completed: number; surveyor: string | null; note: string | null; updated_by: string | null; updated_at: string; revision: string };
 const lights = lightsData as Light[];
 const tambons = [...new Set(lights.map((light) => light.tambon))].sort((a, b) => a.localeCompare(b, "th"));
 
 async function persistStatus(input: { id: string; completed: boolean; surveyor: string; note: string; expectedRevision: string | null }): Promise<SurveyStatus> {
-  const response = await fetch("/api/status", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(input) });
+  const response = await fetch("/api/status", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(input), signal: AbortSignal.timeout(15000) });
   const result = await response.json() as { status?: SurveyStatus; error?: string; current?: SurveyStatus | null };
   if (response.status === 409) throw new ConflictError(result.error || "ข้อมูลเปลี่ยนแล้ว", result.current ?? null);
   if (!response.ok || !result.status) throw new Error(result.error || "บันทึกไม่สำเร็จ");
@@ -35,12 +36,23 @@ export default function SurveyApp() {
   const [statusLoading, setStatusLoading] = useState(true);
   const [draftComplete, setDraftComplete] = useState(false);
   const [surveyor, setSurveyor] = useState("");
+  const [teamName, setTeamName] = useState("");
+  const previousTeamName = useRef("");
+  const handleTeamConfirmed = useCallback((name: string) => {
+    const previous = previousTeamName.current;
+    previousTeamName.current = name;
+    setTeamName(name);
+    setSurveyor(current => !current.trim() || current === previous ? name : current);
+  }, []);
   const [note, setNote] = useState("");
   const [baseRevision, setBaseRevision] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [saveMessage, setSaveMessage] = useState("");
   const [geoMessage, setGeoMessage] = useState("กด ‘ตำแหน่งของฉัน’ เพื่อแสดงตำแหน่งมือถือ");
   const [myPosition, setMyPosition] = useState<[number, number] | null>(null);
+  const [followPosition, setFollowPosition] = useState(false);
+  const [sharingLocation, setSharingLocation] = useState(false);
+  const [sharedPosition, setSharedPosition] = useState<{ lat: number; long: number; accuracy: number; capturedAt: number } | null>(null);
   const [mapReady, setMapReady] = useState(false);
   const mapEl = useRef<HTMLDivElement>(null);
   const mapRef = useRef<import("leaflet").Map | null>(null);
@@ -49,6 +61,8 @@ export default function SurveyApp() {
   const watchRef = useRef<number | null>(null);
   const leafletRef = useRef<typeof import("leaflet") | null>(null);
   const viewportKeyRef = useRef("");
+  const zoomToSelfRef = useRef(false);
+  const followPositionRef = useRef(false);
 
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
@@ -72,13 +86,13 @@ export default function SurveyApp() {
 
   const refreshStatuses = useCallback(async () => {
     try {
-      const response = await fetch("/api/status", { cache: "no-store" });
-      if (!response.ok) throw new Error("load failed");
+      const response = await fetch("/api/status", { cache: "no-store", signal: AbortSignal.timeout(15000) });
+      if (!response.ok) { const result = await response.json(); throw new Error(result.error || "โหลดสถานะไม่สำเร็จ"); }
       const data = await response.json() as { statuses: SurveyStatus[] };
       setStatuses(Object.fromEntries(data.statuses.map((row) => [row.facility_id, row])));
       setStatusError("");
-    } catch {
-      setStatusError("สถานะส่วนกลางยังไม่พร้อม กรุณาลองโหลดใหม่");
+    } catch (error) {
+      setStatusError(error instanceof Error ? error.message : "โหลดสถานะส่วนกลางไม่สำเร็จ กรุณาลองใหม่");
     } finally { setStatusLoading(false); }
   }, []);
 
@@ -102,7 +116,7 @@ export default function SurveyApp() {
       catch (error) { console.error(error); }
     };
     register({
-      name: "list_survey_points", title: "ค้นหาจุดสำรวจ", description: "แสดงจุดสำรวจโคมไฟตามตำบล Location หรือรหัส PEA พร้อมพิกัดและสถานะล่าสุด",
+      name: "list_survey_points", title: "ค้นหาจุดสำรวจ", description: "แสดงจุดสำรวจหม้อแปลงตามตำบล Location หรือรหัส PEA พร้อมพิกัดและสถานะล่าสุด",
       inputSchema: { type: "object", properties: { tambon: { type: "string" }, query: { type: "string" } }, additionalProperties: false },
       annotations: { readOnlyHint: true, untrustedContentHint: true },
       async execute(input) {
@@ -120,7 +134,7 @@ export default function SurveyApp() {
       },
     });
     register({
-      name: "save_survey_status", title: "บันทึกสถานะสำรวจ", description: "บันทึกว่าจุด PEA สำรวจแล้วหรือยัง พร้อมชื่อผู้สำรวจและหมายเหตุ ให้ทีมเห็นร่วมกัน",
+      name: "save_transformer_survey_status", title: "บันทึกสถานะสำรวจ", description: "บันทึกว่าจุด PEA สำรวจแล้วหรือยัง พร้อมชื่อผู้สำรวจและหมายเหตุ ให้ทีมเห็นร่วมกัน",
       inputSchema: { type: "object", properties: { pea: { type: "string" }, completed: { type: "boolean" }, surveyor: { type: "string" }, note: { type: "string" }, expectedRevision: { type: ["string", "null"] } }, required: ["pea", "completed", "surveyor", "expectedRevision"], additionalProperties: false },
       annotations: { readOnlyHint: false, untrustedContentHint: true },
       async execute(input) {
@@ -138,7 +152,7 @@ export default function SurveyApp() {
       },
     });
     register({
-      name: "delete_survey_status", title: "ลบผลสำรวจ", description: "ลบเฉพาะผลสำรวจของจุด PEA โดยคงจุดจากไฟล์ต้นทางไว้",
+      name: "delete_transformer_survey_status", title: "ลบผลสำรวจ", description: "ลบเฉพาะผลสำรวจของจุด PEA โดยคงจุดจากไฟล์ต้นทางไว้",
       inputSchema: { type: "object", properties: { pea: { type: "string" }, expectedRevision: { type: "string" } }, required: ["pea", "expectedRevision"], additionalProperties: false },
       annotations: { readOnlyHint: false, untrustedContentHint: true },
       async execute(input) {
@@ -150,7 +164,7 @@ export default function SurveyApp() {
         if (!response.ok || !result.deleted) throw new Error(result.error || "ลบไม่สำเร็จ");
         setStatuses((previous) => { const next = { ...previous }; delete next[result.deleted!]; return next; });
         setSelectedId(result.deleted);
-        setDraftComplete(false); setSurveyor(""); setNote(""); setBaseRevision(null); setSaveMessage("ลบผลสำรวจแล้ว จุด PEA ยังอยู่ในรายการ");
+        setDraftComplete(false); setSurveyor(previousTeamName.current); setNote(""); setBaseRevision(null); setSaveMessage("ลบผลสำรวจแล้ว จุด PEA ยังอยู่ในรายการ");
         return { pea: result.deleted, deleted: true };
       },
     });
@@ -161,7 +175,7 @@ export default function SurveyApp() {
     if (statusLoading) return;
     const status = selectedId ? statuses[selectedId] : null;
     setDraftComplete(Boolean(status?.completed));
-    setSurveyor(status?.surveyor ?? "");
+    setSurveyor(status?.surveyor || teamName);
     setNote(status?.note ?? "");
     setBaseRevision(status?.revision ?? null);
     setSaveMessage("");
@@ -215,24 +229,54 @@ export default function SurveyApp() {
     if (!L || !map || !myPosition) return;
     selfRef.current?.remove();
     selfRef.current = L.marker(myPosition, { icon: L.divIcon({ className: "", html: '<div class="pin-self"></div>', iconSize: [25, 25], iconAnchor: [12, 12] }) }).addTo(map);
-  }, [myPosition]);
+  }, [myPosition, mapReady]);
+
+  function toggleFollowPosition() {
+    const enabled = !followPositionRef.current;
+    if (enabled && !navigator.geolocation) { setGeoMessage("อุปกรณ์นี้ไม่รองรับการแสดงตำแหน่ง"); return; }
+    followPositionRef.current = enabled;
+    setFollowPosition(enabled);
+    if (!enabled) {
+      zoomToSelfRef.current = false;
+      mapRef.current?.stop();
+      return;
+    }
+    if (myPosition) mapRef.current?.flyTo(myPosition, Math.max(mapRef.current.getZoom(), 16), { duration: 0.6 });
+    else { zoomToSelfRef.current = true; locateMe(); }
+  }
 
   function locateMe() {
     if (!navigator.geolocation) { setGeoMessage("อุปกรณ์นี้ไม่รองรับการแสดงตำแหน่ง"); return; }
     setGeoMessage("กำลังค้นหาตำแหน่งมือถือ…");
     if (watchRef.current !== null) navigator.geolocation.clearWatch(watchRef.current);
-    let centerOnFirstFix = true;
+    let centerOnFirstFix = !followPositionRef.current;
     watchRef.current = navigator.geolocation.watchPosition(({ coords }) => {
       const next: [number, number] = [coords.latitude, coords.longitude];
       setMyPosition(next);
-      // Center only when the button is tapped; preserve the user's zoom and
-      // let subsequent GPS updates move the marker without moving the map.
-      if (centerOnFirstFix) {
+      setSharedPosition({ lat: coords.latitude, long: coords.longitude, accuracy: coords.accuracy, capturedAt: Date.now() });
+      setSharingLocation(true);
+      // Follow the live ref so toggling off takes effect even inside an existing GPS watcher.
+      if (followPositionRef.current) {
+        if (zoomToSelfRef.current) {
+          mapRef.current?.flyTo(next, Math.max(mapRef.current.getZoom(), 16), { duration: 0.6 });
+          zoomToSelfRef.current = false;
+        } else mapRef.current?.panTo(next, { animate: true });
+        centerOnFirstFix = false;
+      } else if (centerOnFirstFix) {
         mapRef.current?.panTo(next, { animate: true });
         centerOnFirstFix = false;
       }
       setGeoMessage("ตำแหน่งของฉัน: " + coords.latitude.toFixed(5) + ", " + coords.longitude.toFixed(5));
-    }, () => setGeoMessage("ไม่สามารถอ่านพิกัดได้ กรุณาอนุญาตตำแหน่งในเบราว์เซอร์"), { enableHighAccuracy: true, timeout: 15000, maximumAge: 5000 });
+    }, (error) => { setGeoMessage("ไม่สามารถอ่านพิกัดได้ กรุณาอนุญาตตำแหน่งในเบราว์เซอร์"); if (error.code === 1) stopSharingLocation(); }, { enableHighAccuracy: true, timeout: 15000, maximumAge: 5000 });
+  }
+
+  function stopSharingLocation() {
+    if (watchRef.current !== null) navigator.geolocation.clearWatch(watchRef.current);
+    watchRef.current = null;
+    followPositionRef.current = false; zoomToSelfRef.current = false; setFollowPosition(false);
+    setSharingLocation(false); setSharedPosition(null); setMyPosition(null);
+    selfRef.current?.remove(); selfRef.current = null;
+    setGeoMessage("หยุดแชร์ตำแหน่งแล้ว");
   }
 
   useEffect(() => () => { if (watchRef.current !== null) navigator.geolocation.clearWatch(watchRef.current); }, []);
@@ -261,28 +305,29 @@ export default function SurveyApp() {
   function loadLatest() {
     if (!selected) return;
     const latest = statuses[selected.id];
-    setDraftComplete(Boolean(latest?.completed)); setSurveyor(latest?.surveyor ?? ""); setNote(latest?.note ?? ""); setBaseRevision(latest?.revision ?? null); setSaveMessage("");
+    setDraftComplete(Boolean(latest?.completed)); setSurveyor(latest?.surveyor || teamName); setNote(latest?.note ?? ""); setBaseRevision(latest?.revision ?? null); setSaveMessage("");
   }
 
   async function deleteSelected() {
     if (!selected || !baseRevision || saving || remoteChanged) return;
     setSaving(true); setSaveMessage("");
     try {
-      const response = await fetch("/api/status", { method: "DELETE", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ id: selected.id, expectedRevision: baseRevision }) });
+      const response = await fetch("/api/status", { method: "DELETE", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ id: selected.id, expectedRevision: baseRevision }), signal: AbortSignal.timeout(15000) });
       const result = await response.json() as { deleted?: string; error?: string; current?: SurveyStatus | null };
       if (response.status === 409) throw new ConflictError(result.error || "ข้อมูลเปลี่ยนแล้ว", result.current ?? null);
       if (!response.ok || !result.deleted) throw new Error(result.error || "ลบไม่สำเร็จ");
       setStatuses((previous) => { const next = { ...previous }; delete next[selected.id]; return next; });
-      setDraftComplete(false); setSurveyor(""); setNote(""); setBaseRevision(null);
+      setDraftComplete(false); setSurveyor(teamName); setNote(""); setBaseRevision(null);
       setSaveMessage("ลบผลสำรวจแล้ว จุด PEA ยังอยู่ในรายการ");
     } catch (error) { handleMutationError(error); }
     finally { setSaving(false); }
   }
 
   const detail = selected && <div className="detail-card">
-    <div className="detail-heading"><span>จุดที่เลือก · ต.{selected.tambon}</span><button type="button" onClick={() => setSelectedId(null)} aria-label="ปิดรายละเอียด">×</button></div>
+    <div className="detail-heading"><span>จุดที่เลือก · ตำบล {selected.tambon}</span><button type="button" onClick={() => setSelectedId(null)} aria-label="ปิดรายละเอียด">×</button></div>
     <div className="detail-location">{selected.location === "-" ? "ไม่ระบุ Location" : selected.location}</div>
     <div className="detail-meta">PEA {selected.id} · {selected.rateKva} kVA · {selected.feeder}</div>
+    <div className="detail-meta">ผู้ใช้ไฟ {selected.numberOfUsers} ราย · รหัสเฟส {selected.phaseCode} · เจ้าของ {selected.owner}</div>
     <div className="detail-coords">{selected.lat}, {selected.long} <a href={"https://www.google.com/maps?q=" + selected.lat + "," + selected.long} target="_blank" rel="noopener noreferrer">เปิดนำทาง ↗</a></div>
     {remoteChanged && <div className="conflict-warning" role="alert">มีคนอื่นอัปเดตจุดนี้แล้ว <Button size="sm" variant="outline" onClick={loadLatest}>โหลดข้อมูลล่าสุด</Button></div>}
     <label className="check-row"><Checkbox checked={draftComplete} onCheckedChange={(checked) => setDraftComplete(checked === true)} disabled={Boolean(statusError) || statusLoading} /><span>สำรวจแล้ว</span></label>
@@ -292,7 +337,7 @@ export default function SurveyApp() {
   </div>;
 
   return <main className="shell">
-    <header className="topbar"><div className="brand"><div className="brand-mark"><Zap size={22} /></div><div><div className="brand-title">สำรวจโคมไฟสาธารณะ</div><div className="brand-sub">อำเภอน้ำพอง · แผนที่หม้อแปลง PEA</div></div></div><div className="topbar-actions"><div className="top-count">{statusLoading || statusError ? lights.length + " จุด" : completedCount + "/" + lights.length + " สำรวจแล้ว"}</div><a className="report-link" href="/report"><ClipboardList size={17} /> รายงาน</a></div></header>
+    <header className="topbar"><div className="brand"><div className="brand-mark"><Zap size={22} /></div><div><div className="brand-title">สำรวจมิเตอร์ไฟสาธารณะ</div><div className="brand-sub">อำเภอน้ำพอง · แผนที่หม้อแปลง PEA</div></div></div><div className="topbar-actions"><div className="top-count">{statusLoading || statusError ? lights.length + " จุด" : completedCount + "/" + lights.length + " สำรวจแล้ว"}</div><a className="report-link" href="/report"><ClipboardList size={17} /> รายงาน</a></div></header>
     <div className={"workspace view-" + mobileView}>
       <aside className="sidebar"><div className="sidebar-head"><div className="eyebrow">รายการสำรวจ</div><h1 className="section-title">เลือกพื้นที่และจุดงาน</h1><div className="search-stack">
         <div><label className="search-label">ตำบล</label><Select value={tambon} onValueChange={(value) => { setTambon(value); setSelectedId(null); }}><SelectTrigger className="search-control"><SelectValue placeholder="ทุกตำบล" /></SelectTrigger><SelectContent><SelectItem value="all">ทุกตำบล</SelectItem>{tambons.map((name) => <SelectItem key={name} value={name}>{name}</SelectItem>)}</SelectContent></Select></div>
@@ -301,9 +346,9 @@ export default function SurveyApp() {
       </div></div>
       {statusError && <div className="status-error" role="alert">{statusError} <button onClick={() => void refreshStatuses()}>ลองใหม่</button></div>}
       {detail}
-      <div className="summary-line"><span>แสดง {visible.length} จุด</span><span>{tambon === "all" ? "ทุกตำบล" : "ต." + tambon}</span></div>
+      <div className="summary-line"><span>แสดง {visible.length} จุด</span><span>{tambon === "all" ? "ทุกตำบล" : "ตำบล " + tambon}</span></div>
       <div className="result-list">{visible.length ? visible.map((light) => <button key={light.id} type="button" className={"result-card " + (selectedId === light.id ? "active" : "")} onClick={() => setSelectedId(light.id)}><div className="result-top"><span className="result-number">{light.seq}</span><span className="result-name">{light.location === "-" ? "ไม่ระบุ Location" : light.location}</span>{statuses[light.id]?.completed ? <CheckCircle2 size={18} color="#258367" aria-label="สำรวจแล้ว" /> : <MapPinned size={17} />}</div><div className="result-pea">PEA {light.id} · {light.rateKva} kVA {statuses[light.id]?.completed ? "· สำรวจแล้ว" : ""}</div></button>) : <p className="p-4 text-sm text-slate-600">ไม่พบจุดที่ตรงกับคำค้น</p>}</div></aside>
-      <section className="map-wrap" aria-label="แผนที่จุดสำรวจ"><div className="map" ref={mapEl} /><div className="map-filter"><Select value={tambon} onValueChange={(value) => { setTambon(value); setSelectedId(null); }}><SelectTrigger aria-label="เลือกตำบลบนแผนที่"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="all">ทุกตำบล</SelectItem>{tambons.map((name) => <SelectItem key={name} value={name}>{name}</SelectItem>)}</SelectContent></Select></div><div className="map-tools"><Button className="map-tool" variant="outline" onClick={locateMe}><LocateFixed size={18} /> ตำแหน่งของฉัน</Button></div><div className="map-hint">{selected ? "PEA " + selected.id + " · " + selected.location + " · " + selected.rateKva + " kVA" : geoMessage}</div><div className="mobile-detail">{detail}</div></section>
+      <section className="map-wrap" aria-label="แผนที่จุดสำรวจ"><div className="map" ref={mapEl} /><div className="map-filter"><Select value={tambon} onValueChange={(value) => { setTambon(value); setSelectedId(null); }}><SelectTrigger aria-label="เลือกตำบลบนแผนที่"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="all">ทุกตำบล</SelectItem>{tambons.map((name) => <SelectItem key={name} value={name}>{name}</SelectItem>)}</SelectContent></Select></div><div className="map-tools"><div className="map-location-controls"><Button className="map-tool" variant="outline" onClick={locateMe}><LocateFixed size={18} /> ตำแหน่งของฉัน</Button><Button className={"self-zoom-button" + (followPosition ? " is-following" : "")} variant="outline" onClick={toggleFollowPosition} aria-pressed={followPosition} aria-label={followPosition ? "ปิดการเลื่อนตามตำแหน่งของฉัน" : "เปิดการเลื่อนตามตำแหน่งของฉัน"} title={followPosition ? "กดเพื่อหยุดเลื่อนตาม GPS" : "กดเพื่อเลื่อนตาม GPS"}><LocateFixed size={20} /></Button></div></div><TeamLocations map={mapRef.current} ready={mapReady} position={sharedPosition} sharing={sharingLocation} onTeamConfirmed={handleTeamConfirmed} /><div className="map-hint">{selected ? "PEA " + selected.id + " · " + selected.location + " · " + selected.rateKva + " kVA" : geoMessage}</div>{statusError && <div className="mobile-map-error" role="alert">{statusError}</div>}<div className="mobile-detail">{detail}</div></section>
     </div>
     <nav className="mobile-nav" aria-label="เมนูหลัก"><button className={mobileView === "map" ? "active" : ""} onClick={() => { viewportKeyRef.current = ""; setMobileView("map"); }}><MapPinned size={20} />แผนที่</button><button className={mobileView === "list" ? "active" : ""} onClick={() => setMobileView("list")}><Search size={20} />รายการ</button><a href="/report"><ClipboardList size={20} />รายงาน</a></nav>
   </main>;

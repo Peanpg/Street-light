@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { deleteSurveyStatus, getSurveyStatus, listSurveyStatuses, saveSurveyStatus } from "@/db/status";
-import lights from "@/app/lights.json";
+import lights from "@/app/transformers.json";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -8,10 +8,10 @@ const validIds = new Set(lights.map((light) => light.id));
 
 export async function GET() {
   try {
-    return NextResponse.json({ statuses: await listSurveyStatuses() }, { headers: { "Cache-Control": "no-store" } });
+    return NextResponse.json({ statuses: (await listSurveyStatuses()).filter((row) => validIds.has(row.facility_id)) }, { headers: { "Cache-Control": "no-store" } });
   } catch (error) {
     console.error("Status load failed", error);
-    return NextResponse.json({ error: "ไม่สามารถโหลดสถานะสำรวจได้" }, { status: 503 });
+    return NextResponse.json({ error: process.env.DATABASE_URL ? "เชื่อมต่อฐานข้อมูลไม่สำเร็จ กรุณาลองใหม่หรือตรวจสอบฐานข้อมูล" : "ยังไม่ได้เชื่อมฐานข้อมูลส่วนกลาง กรุณาตั้งค่า DATABASE_URL แล้ว Redeploy" }, { status: 503 });
   }
 }
 

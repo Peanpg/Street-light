@@ -1,5 +1,5 @@
 {
-  "name": "pea-namphong-lights-vercel",
+  "name": "pea-namphong-transformers-vercel",
   "version": "0.1.0",
   "private": true,
   "engines": {
@@ -7,7 +7,7 @@
   },
   "scripts": {
     "dev": "next dev",
-    "build": "next build",
+    "build": "next build --webpack",
     "start": "next start",
     "lint": "eslint .",
     "import:report": "node scripts/import-report-csv.mjs"

@@ -4,9 +4,9 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { ArrowLeft, Download, MapPinned, RefreshCw } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import lightsData from "../lights.json";
+import lightsData from "../transformers.json";
 
-type Light = { id: string; seq: number; tambon: string; location: string; lat: number; long: number; rateKva: number };
+type Light = { id: string; seq: number; tambon: string; feeder: string; location: string; lat: number; long: number; rateKva: number; owner: string; phaseCode: number; numberOfUsers: number };
 type Status = { facility_id: string; completed: number; surveyor: string | null; note: string | null; updated_at: string };
 const lights = (lightsData as Light[]).slice().sort((a, b) => a.tambon.localeCompare(b.tambon, "th") || a.seq - b.seq);
 const tambons = [...new Set(lights.map((light) => light.tambon))].sort((a, b) => a.localeCompare(b, "th"));
@@ -21,7 +21,7 @@ export default function ReportApp() {
 
   const refresh = useCallback(async () => {
     try {
-      const response = await fetch("/api/status", { cache: "no-store" });
+      const response = await fetch("/api/status", { cache: "no-store", signal: AbortSignal.timeout(15000) });
       if (!response.ok) throw new Error("โหลดรายงานไม่สำเร็จ");
       const data = await response.json() as { statuses: Status[] };
       setStatuses(Object.fromEntries(data.statuses.map((status) => [status.facility_id, status])));
@@ -45,21 +45,21 @@ export default function ReportApp() {
 
   function downloadCsv() {
     const csvCell = (value: string | number) => { const text = String(value); const safe = /^[=+@\-\t\r]/.test(text) && typeof value === "string" ? "'" + text : text; return '"' + safe.replaceAll('"', '""') + '"'; };
-    const rows = [["ตำบล", "ลำดับ", "Location", "PEA", "Rate kVA", "Lat", "Long", "สถานะ", "ผู้สำรวจ", "หมายเหตุ", "อัปเดตล่าสุด"], ...visible.map((light) => { const status = statuses[light.id]; return [light.tambon, light.seq, light.location, light.id, light.rateKva, light.lat, light.long, status?.completed ? "สำรวจแล้ว" : "ยังไม่สำรวจ", status?.surveyor ?? "", status?.note ?? "", status?.updated_at ?? ""]; })];
+    const rows = [["ตำบล", "ลำดับ", "Location", "PEA", "Rate kVA", "ฟีดเดอร์", "จำนวนผู้ใช้ไฟ", "รหัสเฟส", "เจ้าของ", "Lat", "Long", "สถานะ", "ผู้สำรวจ", "หมายเหตุ", "อัปเดตล่าสุด"], ...visible.map((light) => { const status = statuses[light.id]; return [light.tambon, light.seq, light.location, light.id, light.rateKva, light.feeder, light.numberOfUsers, light.phaseCode, light.owner, light.lat, light.long, status?.completed ? "สำรวจแล้ว" : "ยังไม่สำรวจ", status?.surveyor ?? "", status?.note ?? "", status?.updated_at ?? ""]; })];
     const csv = "\ufeff" + rows.map((row) => row.map(csvCell).join(",")).join("\r\n");
     const url = URL.createObjectURL(new Blob([csv], { type: "text/csv;charset=utf-8" }));
-    const link = document.createElement("a"); link.href = url; link.download = `รายงานโคมไฟ_${tambon === "all" ? "ทุกตำบล" : tambon}.csv`; link.click(); window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+    const link = document.createElement("a"); link.href = url; link.download = `รายงานสำรวจมิเตอร์ไฟสาธารณะ_${tambon === "all" ? "ทุกตำบล" : tambon}.csv`; link.click(); window.setTimeout(() => URL.revokeObjectURL(url), 1000);
   }
 
   return <main className="report-page">
-    <header className="report-top"><a href="/" className="report-back"><ArrowLeft size={19} /> กลับแผนที่</a><span>รายงานสำรวจโคมไฟสาธารณะ</span></header>
+    <header className="report-top"><a href="/" className="report-back"><ArrowLeft size={19} /> กลับแผนที่</a><span>รายงานสำรวจมิเตอร์ไฟสาธารณะ</span></header>
     <div className="report-body">
       <div className="report-heading"><div><div className="eyebrow">อำเภอน้ำพอง</div><h1>รายงานผลสำรวจ</h1><p>สรุปข้อมูลล่าสุดของทุกตำบลและรายจุด</p></div><div className="report-actions"><Button variant="outline" onClick={() => void refresh()} disabled={loading}><RefreshCw size={16} /> อัปเดต</Button><Button onClick={downloadCsv} disabled={loading || Boolean(error)}><Download size={17} /> ดาวน์โหลด CSV</Button></div></div>
       {error && <div className="status-error" role="alert">{error}</div>}
-      <div className="report-stats"><div><span>จุดทั้งหมด</span><strong>{areaLights.length}</strong></div><div><span>สำรวจแล้ว</span><strong>{loading ? "—" : completed}</strong></div><div><span>ยังไม่สำรวจ</span><strong>{loading ? "—" : areaLights.length - completed}</strong></div><div><span>ตำบล</span><strong>{tambon === "all" ? tambons.length : 1}</strong></div></div>
-      <div className="report-filter"><label>ตำบล<Select value={tambon} onValueChange={setTambon}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value="all">ทุกตำบล</SelectItem>{tambons.map((name) => <SelectItem value={name} key={name}>{name}</SelectItem>)}</SelectContent></Select></label><label>สถานะ<Select value={statusFilter} onValueChange={setStatusFilter}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value="all">ทุกสถานะ</SelectItem><SelectItem value="done">สำรวจแล้ว</SelectItem><SelectItem value="open">ยังไม่สำรวจ</SelectItem></SelectContent></Select></label><span>{updated ? "อัปเดต " + updated.toLocaleTimeString("th-TH") : "กำลังโหลดข้อมูล"}</span></div>
-      {tambon === "all" && <section className="area-summary"><h2>สรุปแต่ละตำบล</h2><div className="area-grid">{summaries.map((item) => <button type="button" key={item.name} onClick={() => setTambon(item.name)}><strong>ต.{item.name}</strong><span>{item.done}/{item.total} สำรวจแล้ว</span><div className="progress-track"><i style={{ width: `${item.total ? item.done / item.total * 100 : 0}%` }} /></div></button>)}</div></section>}
-      <section className="report-points"><h2>รายการจุด <span>{visible.length} จุด · แตะจุดเพื่อดูบนแผนที่</span></h2><div className="report-list">{visible.map((light) => { const status = statuses[light.id]; return <a key={light.id} href={"/?point=" + encodeURIComponent(light.id)} className="report-point" aria-label={"ดูบนแผนที่ PEA " + light.id + " " + light.location}><div className="report-point-main"><span className="report-seq">{light.seq}</span><div><strong>{light.location === "-" ? "ไม่ระบุ Location" : light.location}</strong><span>ต.{light.tambon} · PEA {light.id} · {light.rateKva} kVA</span><small>{light.lat}, {light.long}</small></div></div><div className="report-point-status"><b className={status?.completed ? "done" : "open"}>{status?.completed ? "สำรวจแล้ว" : "ยังไม่สำรวจ"}</b>{status?.surveyor && <span>ผู้สำรวจ: {status.surveyor}</span>}{status?.note && <span>หมายเหตุ: {status.note}</span>}{status?.updated_at && <small>แก้ไข {new Date(status.updated_at).toLocaleString("th-TH")}</small>}</div></a>; })}</div></section>
+      <div className="report-stats"><div><span>จุดทั้งหมด</span><strong>{areaLights.length}</strong></div><div><span>สำรวจแล้ว</span><strong>{(loading || error) ? "—" : completed}</strong></div><div><span>ยังไม่สำรวจ</span><strong>{(loading || error) ? "—" : areaLights.length - completed}</strong></div><div><span>ตำบล</span><strong>{tambon === "all" ? tambons.length : 1}</strong></div></div>
+      <div className="report-filter"><label>ตำบล<Select value={tambon} onValueChange={setTambon}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value="all">ทุกตำบล</SelectItem>{tambons.map((name) => <SelectItem value={name} key={name}>{name}</SelectItem>)}</SelectContent></Select></label><label>สถานะ<Select value={statusFilter} onValueChange={setStatusFilter}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value="all">ทุกสถานะ</SelectItem><SelectItem value="done">สำรวจแล้ว</SelectItem><SelectItem value="open">ยังไม่สำรวจ</SelectItem></SelectContent></Select></label><span>{error ? "สถานะยังไม่พร้อม" : updated ? "อัปเดต " + updated.toLocaleTimeString("th-TH") : "กำลังโหลดข้อมูล"}</span></div>
+      {tambon === "all" && <section className="area-summary"><h2>สรุปแต่ละตำบล</h2><div className="area-grid">{summaries.map((item) => <button type="button" key={item.name} onClick={() => setTambon(item.name)}><strong>ตำบล {item.name}</strong><span>{loading || error ? "—" : item.done}/{item.total} สำรวจแล้ว</span><div className="progress-track"><i style={{ width: `${item.total ? item.done / item.total * 100 : 0}%` }} /></div></button>)}</div></section>}
+      <section className="report-points"><h2>รายการจุด <span>{visible.length} จุด · แตะจุดเพื่อดูบนแผนที่</span></h2><div className="report-list">{visible.map((light) => { const status = statuses[light.id]; return <a key={light.id} href={"/?point=" + encodeURIComponent(light.id)} className="report-point" aria-label={"ดูบนแผนที่ PEA " + light.id + " " + light.location}><div className="report-point-main"><span className="report-seq">{light.seq}</span><div><strong>{light.location === "-" ? "ไม่ระบุ Location" : light.location}</strong><span>ตำบล {light.tambon} · PEA {light.id} · {light.rateKva} kVA</span><small>{light.lat}, {light.long}</small></div></div><div className="report-point-status"><b className={status?.completed ? "done" : "open"}>{loading || error ? "ยังโหลดสถานะไม่ได้" : status?.completed ? "สำรวจแล้ว" : "ยังไม่สำรวจ"}</b>{status?.surveyor && <span>ผู้สำรวจ: {status.surveyor}</span>}{status?.note && <span>หมายเหตุ: {status.note}</span>}{status?.updated_at && <small>แก้ไข {new Date(status.updated_at).toLocaleString("th-TH")}</small>}</div></a>; })}</div></section>
     </div>
     <nav className="mobile-nav" aria-label="เมนูหลัก"><a href="/"><MapPinned size={20} />แผนที่</a><a href="/?view=list"><ArrowLeft size={20} />รายการ</a><span className="active"><Download size={20} />รายงาน</span></nav>
   </main>;
